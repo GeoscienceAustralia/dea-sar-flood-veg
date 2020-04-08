@@ -1,6 +1,6 @@
 # Flood mapping using SAR imagery
 
-This repo is for ongoing work progressing towards the development of a
+This repo is for ongoing collaborative work progressing towards the development of a
 workflow for mapping flooding, using Sentinel 1 satellite radar imagery via
 Digital Earth Australia.
 
