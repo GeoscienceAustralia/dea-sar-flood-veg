@@ -29,11 +29,6 @@ def fuzzy_smf(x, a, b):
     A = 2 * ((x - a) / delta)**2
     B = 2 * ((x - b) / delta)**2
     
-    #result = np.zeros_like(x, dtype=np.float32)
-    #result[(x > a) & (x < middle)] = A[(x > a) & (x < middle)]
-    #result[(x >= middle) & (x < b)] = 1 - B[(x >= middle) & (x < b)]
-    #result[x >= b] = 1
-    
     result = np.where(x < middle, A, 1 - B)
     result[x < a] = 0
     result[x > b] = 1
