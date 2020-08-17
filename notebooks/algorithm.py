@@ -66,16 +66,45 @@ def find_mode(population):
 def leftFitNormal(population):
     """
     Obtain mode and standard deviation from the left side of a population.
-
-    >>> mode, sigma = leftFitNormal(np.random.normal(loc=-20, scale=3, size=10000))
+    
+    >>> pop = np.random.normal(loc=-20, scale=3, size=10000)
+    >>> mode, sigma = leftFitNormal(pop)
     >>> -22 < mode < -18
     True
     >>> round(sigma)
-    3.0
+    3
+    
+    >>> pop[pop > -18] += 10     # perturb right side
+    >>> mode, sigma = leftFitNormal(pop)
+    >>> -22 < mode < -18
+    True
+    >>> round(sigma) == 3
+    True
+    
+    >>> pop[pop < -22] -= 10     # perturb left side
+    >>> mode, sigma = leftFitNormal(pop)
+    >>> -22 < mode < -18
+    True
+    >>> round(sigma) == 3
+    False
     """
-    # Quick alternative robust (but symmetric) fit:
-    #median = np.nanmedian(population) 
-    #MADstd = np.nanmedian(np.abs(population - median)) * 1.4826 # robust estimator
+
+    # Quick alternative robust fit:
+    # median = np.nanmedian(population) 
+    # MADstd = np.nanmedian(np.abs(population - median)) * 1.4826 
+    # Could still modify this estimator to ignore samples > median.
+    
+    # Note, if the distribution is right-skewed or bimodal (e.g. if there is
+    # some land amongst mostly open water) then other relative frequencies
+    # will proportionally be depressed, favouring the fit of a broader
+    # Gaussian (perhaps also shifted slightly rightward) to the left side
+    # of the histogram (compared to if the distribution was normal).
+    # Could address this by normalising the interval area.
+    #
+    # Currently the tests for perturbed distributions bypass this limitation
+    # by _conditionally_ replacing existing samples, rather than by mixing
+    # additional components into the population i.e. avoiding
+    # pop[:5000] = np.linspace(-15, -5, 5000).
     
     std = np.nanstd(population) # naive initial estimate
 
@@ -97,13 +126,21 @@ def leftFitNormal(population):
 def leftFitNormal2(population):
     """
     Obtain mode, right 1/20 maximum, and covariance of left fit.
+    
+    The following fits two distributions, the second of which is poorly
+    modelled by the Gaussian:
 
-    >>> mode, m20, measure = leftFitNormal2(np.random.normal(loc=-20, scale=3, size=5000))
-    >>> m20 > -17
+    >>> mode, m20, measure = leftFitNormal2(np.random.normal(loc=-20, scale=3, size=10000))
+    >>> -22 < mode < -18
+    True
+    >>> 0 < (m20 - mode) < 20
     True
     >>> 1 >= measure > 0.9
     True
-    >>> mode, m20, measure = leftFitNormal2(np.random.normal(loc=-20, scale=3, size=5000)**2)
+    
+    >>> mode, m20, measure = leftFitNormal2(np.random.normal(loc=-20, scale=3, size=10000)**2)
+    >>> mode < m20
+    True
     >>> measure > 0.9
     False
     """
@@ -130,25 +167,53 @@ def leftFitNormal2(population):
     
     return mode, m20, correlation
 
-def leftFitGamma(population): # TODO: test this function
+
+def leftFitGamma(population, limit): # TODO: test this function
     """
     Left fit of Gamma distribution, to extract mode.
     
-    Assumes population is clipped such that mode is within ten units of the maximum sample.
+    Assumes the given limit is within ten units greater than the mode.
     
-    #>>>mode = leftFitGamma(numpy.random.gamma(9, (-5 + 20)/(9 - 1), 5000) - 20)
-    #>>>mode
+    >>> g = lambda k, mode, x0, n: np.random.gamma(k, (mode-x0)/(k-1), n) + x0
+    >>> -12 < leftFitGamma(g(9, -10, -25, 5000), -5) < -8
+    True
+    
+    >>> pop = g(8, -15, -40, 8000)
+    >>> pop[pop > -14] += 30    # perturb right side
+    >>> -17 < leftFitGamma(pop, -10) < -13
+    True
     """
+    # Note Gamma(k>=1, theta)+x0 has mode=(k-1)theta+x0.
+    # This has curve scipy.stats.gamma(k, loc=x0, scale=theta).pdf(x),
+    # and samples np.random.gamma(k, theta, n)+x0.
+    
+    # TODO: Should there be a renormalisation for proper fitting, 
+    # after excluding the right component of the sample set?
+    
+    # Note, if there are few bins left of (limit-10) then this algorithm
+    # is prone to return approximately (limit-10), because a great fit is 
+    # inevitable when all save a few datapoints are excluded. Such cases 
+    # should be rejected.
+    
     Y, X = hist_fixedwidth(population)
-    x0 = X[0]
-    candidates = np.arange(X[-1] - 10, X[-1], 0.1)
-    rmse = np.full_like(candidates, np.nan)
-    for i, mode in enumerate(modes):
-        def gamma(x, k):
+    
+    def fit(mode): # Fit shape parameter and report residual
+        def gamma(x, k): # Gamma function with fixed mode and origin
             return scipy.stats.gamma.pdf(x, k, X[0], (mode - X[0])/(k - 1))
-        # k = nonlinfit
-        #rmse[i] = 
-    return candidates[rmse.argmin()]
+        left = (X < mode)
+        
+        k = scipy.optimize.curve_fit(gamma, X[left], Y[left], bounds=(1, np.inf))[0][0]
+
+        mean_square_error = ((Y[left] - gamma(X[left], k))**2).mean()
+
+        return mean_square_error, mode
+    
+    assert X[0] + 5 < limit - 10 # TODO: tolerate gracefully
+    
+    # try different mode candidates
+    fits = dict(fit(mode) for mode in np.arange(limit - 10, limit, 0.1))
+    
+    return fits[min(fits)] # select mode corresponding to best RMSE (and MSE)
         
     
 class Inseparable(Exception): # may be raised by chiSeparate
@@ -160,7 +225,29 @@ def chiSeparate(control, test, nbins=100):
     
     Given two distributions that may overlap in the middle,
     try to find end-intervals that separate between the two.
+    
+    This algorithm bins asymmetrically by the control percentiles,
+    and marks overlaps using a variant of Chi distance.
+    
+    >>> pop1 = np.random.normal(loc=-20, scale=3, size=5000)
+    >>> pop2 = np.random.normal(loc=-10, scale=3, size=5000) # well-separated
+    >>> a, b = chiSeparate(pop1, pop2)
+    >>> -17 < a <= b < -13
+    True
+    >>> a, b = chiSeparate(pop2, pop1)
+    >>> -17 < a <= b < -13
+    True
+    >>> chiSeparate(pop1, pop2-10) # no separation
+    Traceback (most recent call last):
+        ...
+    algorithm.Inseparable: Cannot distinguish populations
+    >>> a, b = chiSeparate(pop1 - 20, pop2) # too much separation
+    >>> a < -45 and b == 0
+    True
     """
+    # Could this algorithm be made more robust to unexpected cases
+    # such as the final example?
+    
     n0 = len(control)
     n1 = len(test)
     minsample = min(n0, n1)
@@ -177,10 +264,10 @@ def chiSeparate(control, test, nbins=100):
     zk = (freq0 - freq1) / np.sqrt(freq0/n0 + freq1/n1)
     
     if (minsample * z2.sum() * nbins**-0.5 - nbins**0.5) < 4:
-        raise Inseparable
+        raise Inseparable('Cannot distinguish populations')
     
     # find where in the domain that zk (interpolated) crosses -1.96
-    y = np.poly1d(np.polyfit(centres, zk + 1.96, deg=9))
+    y = np.poly1d(np.polyfit(x, zk + 1.96, deg=9))
     roots = y.roots.real[y.roots.imag == 0]
     roots = roots[(x[0] < roots) & (roots < x[-1])]
     
@@ -192,8 +279,18 @@ def chiSeparate(control, test, nbins=100):
 def openwater(backscatter, persistent, historic):
     """
     Adaptively select thresholds for classifying areas of open water (low backscatter)
+    
+    
+    >>> backscatter = np.random.normal(loc=-10, scale=5, size=6000) # land
+    >>> backscatter[:1000] = np.random.normal(loc=-18, scale=2, size=1000) # openwater
+    >>> persistent = np.ogrid[:6000] < 600 #　boolean: always open water
+    >>> historic = np.ogrid[:6000] < 2000 # boolean: sometimes flooded
+    >>> a, b = openwater(backscatter, persistent, historic)
+    >>> (backscatter[:1000] < a).mean()
+    
     """
     
+    # group samples
     dark = backscatter[persistent]
     notdark = backscatter[~persistent]
     unprecedented = backscatter[~historic]
@@ -228,8 +325,8 @@ def openwater(backscatter, persistent, historic):
     L = L1 if R == R1 else np.mean([R, find_mode(dark < R2)])
         
     if L > R:
-        if False: #R3 < R2: # TODO
-            L = leftFitGamma(wettable) # Matgen method
+        if R3 < R2:
+            L = leftFitGamma(wettable, R3) # Matgen method
         else:
             L = np.mean([R, wettable.min()]) # should also require minimum is >-40dB
 
