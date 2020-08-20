@@ -168,7 +168,7 @@ def leftFitNormal2(population):
     return mode, m20, correlation
 
 
-def leftFitGamma(population, limit): # TODO: test this function
+def leftFitGamma(population, limit, minpoints=20):
     """
     Left fit of Gamma distribution, to extract mode.
     
@@ -182,18 +182,20 @@ def leftFitGamma(population, limit): # TODO: test this function
     >>> pop[pop > -14] += 30    # perturb right side
     >>> -17 < leftFitGamma(pop, -10) < -13
     True
+    
+    >>> leftFitGamma(np.linspace(-20, -10, 1000), -25) is None # limit too low
+    True
     """
     # Note Gamma(k>=1, theta)+x0 has mode=(k-1)theta+x0.
     # This has curve scipy.stats.gamma(k, loc=x0, scale=theta).pdf(x),
     # and samples np.random.gamma(k, theta, n)+x0.
     
+    # Note, must reject the inevitably great (but uninformative) fits that 
+    # occur when there are too few datapoints, e.g. if there are too
+    # few bins left of (limit-10).
+    
     # TODO: Should there be a renormalisation for proper fitting, 
     # after excluding the right component of the sample set?
-    
-    # Note, if there are few bins left of (limit-10) then this algorithm
-    # is prone to return approximately (limit-10), because a great fit is 
-    # inevitable when all save a few datapoints are excluded. Such cases 
-    # should be rejected.
     
     Y, X = hist_fixedwidth(population)
     
@@ -208,12 +210,11 @@ def leftFitGamma(population, limit): # TODO: test this function
 
         return mean_square_error, mode
     
-    assert X[0] + 5 < limit - 10 # TODO: tolerate gracefully
+    # Try different mode candidates (and skip where too few datapoints to fit)
+    fits = dict(fit(mode) for mode in np.arange(limit - 10, limit, 0.1) if X[minpoints] <= mode)
     
-    # try different mode candidates
-    fits = dict(fit(mode) for mode in np.arange(limit - 10, limit, 0.1))
-    
-    return fits[min(fits)] # select mode corresponding to best RMSE (and MSE)
+    # select mode corresponding to candidate with best RMSE (and MSE)
+    return fits[min(fits)] if len(fits) else None 
         
     
 class Inseparable(Exception): # may be raised by chiSeparate
@@ -286,9 +287,13 @@ def openwater(backscatter, persistent, historic):
     >>> persistent = np.ogrid[:6000] < 600 #　boolean: always open water
     >>> historic = np.ogrid[:6000] < 2000 # boolean: sometimes flooded
     >>> a, b = openwater(backscatter, persistent, historic)
-    >>> (backscatter[:1000] < a).mean()
+    >>> #(backscatter[:1000] < a).mean()
+    >>> #backscatter[:1000].mean()
+    >>> #backscatter.mean()
+    >>> #a,b
     
     """
+    # TODO: ensure a lower bound, e.g. -40dB, in places.
     
     # group samples
     dark = backscatter[persistent]
@@ -320,15 +325,14 @@ def openwater(backscatter, persistent, historic):
     R = min(R1, R2, R3)
     
     if R > upperbound: # abort! (no apparent water)
-        return [backscatter.min()] * 2
+        return [backscatter.min()] * 2 # TODO: should also require minimum is >-40dB
 
     L = L1 if R == R1 else np.mean([R, find_mode(dark < R2)])
         
     if L > R:
-        if R3 < R2:
-            L = leftFitGamma(wettable, R3) # Matgen method
-        else:
-            L = np.mean([R, wettable.min()]) # should also require minimum is >-40dB
+        L = leftFitGamma(wettable, R3) if R3 < R2 else None # try Matgen method
+        if L is None:
+            L = np.mean([R, wettable.min()])
 
     return L, R
 
