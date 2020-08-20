@@ -281,19 +281,17 @@ def openwater(backscatter, persistent, historic):
     """
     Adaptively select thresholds for classifying areas of open water (low backscatter)
     
-    
-    >>> backscatter = np.random.normal(loc=-10, scale=5, size=6000) # land
+    >>> backscatter = np.random.normal(loc=-10, scale=2, size=6000) # land
     >>> backscatter[:1000] = np.random.normal(loc=-18, scale=2, size=1000) # openwater
     >>> persistent = np.ogrid[:6000] < 600 #　boolean: always open water
     >>> historic = np.ogrid[:6000] < 2000 # boolean: sometimes flooded
     >>> a, b = openwater(backscatter, persistent, historic)
-    >>> #(backscatter[:1000] < a).mean()
-    >>> #backscatter[:1000].mean()
-    >>> #backscatter.mean()
-    >>> #a,b
-    
+    >>> (backscatter[:1000] < a).mean() > 0.1 # some water detected
+    True
+    >>> (backscatter[1000:] > b).mean() > 0.95 # most land detected
+    True
     """
-    # TODO: ensure a lower bound, e.g. -40dB, in places.
+    # TODO: ensure a lower bound, e.g. -40dB, in parts where appropriate.
     
     # group samples
     dark = backscatter[persistent]
@@ -324,10 +322,18 @@ def openwater(backscatter, persistent, historic):
     
     R = min(R1, R2, R3)
     
+    # Note R2 or R3 could be set to the minimum backscatter, for example
+    # if populations well separated but lowest outlier not persistently wet.
+    
     if R > upperbound: # abort! (no apparent water)
-        return [backscatter.min()] * 2 # TODO: should also require minimum is >-40dB
+        return [backscatter.min()] * 2
 
-    L = L1 if R == R1 else np.mean([R, find_mode(dark < R2)])
+    assert (dark < R2).sum() > 0, (R1, R2, R3, backscatter.min(), dark.min()) # TODO: handle gracefully
+    
+    L = L1 if R == R1 else np.mean([R, find_mode(dark[dark < R2])])
+    
+    # If R1 or R2 is less than R3, then guaranteed that L =< R.
+    # TODO: Does this make (R3 < R2) test redundant?
         
     if L > R:
         L = leftFitGamma(wettable, R3) if R3 < R2 else None # try Matgen method
