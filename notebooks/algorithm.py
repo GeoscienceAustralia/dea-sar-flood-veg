@@ -67,7 +67,7 @@ def leftFitNormal(population):
     """
     Obtain mode and standard deviation from the left side of a population.
     
-    >>> pop = np.random.normal(loc=-20, scale=3, size=10000)
+    >>> pop = np.random.normal(loc=-20, scale=3, size=15000)
     >>> mode, sigma = leftFitNormal(pop)
     >>> -22 < mode < -18
     True
@@ -348,6 +348,16 @@ def vegetation(backscatter, lowlying, precedent, v4=False):
     Adaptively select thresholds for classifying inundated vegetation (high backscatter)
     
     Assumes open-water (very low backscatter) has already been filtered out.
+
+    >>> backscatter = np.random.normal(loc=-15, scale=2, size=6000) # dry land
+    >>> backscatter[:1000] = np.random.normal(loc=-10, scale=2, size=1000) # wet veg
+    >>> low = np.ogrid[:6000] < 3000 #　boolean: plausibly wettable
+    >>> history = np.ogrid[:6000] < 500 # boolean: previous flooding
+    >>> a, b, g1, g2, cor = vegetation(backscatter, low, history)
+    >>> (backscatter[:1000] > b).mean() > 0.3 # some flood detected
+    True
+    >>> (backscatter[1000:] < a).mean() > 0.9 # most land detected
+    True
     """
     
     test = backscatter[lowlying] # mixture wet and dry
@@ -368,6 +378,8 @@ def vegetation(backscatter, lowlying, precedent, v4=False):
     enhance = 4 * (C / HO)**2
     attenuate = 4 * (C / HNO)**2
     
+    assert np.isfinite(enhance) and np.isfinite(attenuate), (C, HO, HNO)
+    
     if v4:
         try:
             # option for more rigorous consistency
@@ -384,6 +396,23 @@ def vegetation(backscatter, lowlying, precedent, v4=False):
 def classify(backscatter, wofs, hand, landcover):
     """
     Generate probabilistic flood raster
+    
+    >>> backscatter = np.random.normal(loc=-15, scale=2, size=10000) # dry land
+    >>> backscatter[:1000] = np.random.normal(loc=-10, scale=2, size=1000) # wet veg
+    >>> backscatter[1000:3000] = np.random.normal(loc=-20, scale=2, size=2000) # openwater
+    >>> wofs = np.zeros_like(backscatter)
+    >>> wofs[500:2000] = 0.1 # precedented
+    >>> wofs[1000:1500] = 1 # persistent
+    >>> hand = np.zeros_like(backscatter)
+    >>> hand[6000:] = 50 # high country
+    >>> cat = np.ogrid[:10000] % 2 # equal parts a few landcover categories
+    >>> flood = classify(backscatter, wofs, hand, cat)
+    >>> flood[:1000].mean() > 0.15 # veg
+    True
+    >>> flood[1000:3000].mean() > 0.15 # open water
+    True
+    >>> flood[3000:].mean() > 0.15 # dry land
+    False
     """
     
     # define input thresholds
