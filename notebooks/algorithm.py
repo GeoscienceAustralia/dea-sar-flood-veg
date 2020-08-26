@@ -157,9 +157,9 @@ def leftFitNormal2(population):
         return np.exp(-0.5 * ((x - mode)/sigma)**2) / (sigma * (2*np.pi)**0.5)
     std, cov = scipy.optimize.curve_fit(gaussian, X[:pos+1], Y[:pos+1], p0=std) # histogram fit
     
-    # Calculate two-sided covariance of the fit
+    # Calculate normalised two-sided covariance of the fit
     double = min(len(X), 2*pos)
-    correlation = np.corrcoef(gaussian(X[:double], std), Y[:double])[0, 1] # normalised covariance
+    correlation = np.corrcoef(gaussian(X[:double], std), Y[:double])[0, 1] if double > 100 else 0
     
     # Find the right intercept with 1/20th maximum
     pos20 = (abs(Y[pos:] - Y.max() / 20)).argmin()
@@ -336,9 +336,8 @@ def openwater(backscatter, persistent, historic):
     # TODO: Does this make (R3 < R2) test redundant?
         
     if L > R:
-        L = leftFitGamma(wettable, R3) if R3 < R2 else None # try Matgen method
-        if L is None:
-            L = np.mean([R, wettable.min()])
+        # try Matgen method
+        L = (R3 < R2) and leftFitGamma(wettable, R3) or np.mean([R, wettable.min()])
 
     return L, R
 
@@ -372,13 +371,19 @@ def vegetation(backscatter, lowlying, precedent, v4=False):
         return ((x > S1) & (x < S2)).mean()
     HO = portion(backscatter[lowlying & precedent])
     HNO = portion(backscatter[lowlying & ~precedent])
-    C = portion(control)
+    C = portion(control) or 1
+    
+    # Note, the original algorthm only set C=1 if there were no control
+    # samples, or if S2 was not placed in a histogram bin distinct
+    # from both S1 and the maximum control sample. 
+    
+    # Note, it is also possible for HO on HNO to be zero (e.g. if there
+    # are no samples of the corresponding category and range),
+    # which will result in non-finite output.
     
     # Produce gamma exponents, to warp or bias the fuzzy interval
     enhance = 4 * (C / HO)**2
     attenuate = 4 * (C / HNO)**2
-    
-    assert np.isfinite(enhance) and np.isfinite(attenuate), (C, HO, HNO)
     
     if v4:
         try:
@@ -407,11 +412,11 @@ def classify(backscatter, wofs, hand, landcover):
     >>> hand[6000:] = 50 # high country
     >>> cat = np.ogrid[:10000] % 2 # equal parts a few landcover categories
     >>> flood = classify(backscatter, wofs, hand, cat)
-    >>> flood[:1000].mean() > 0.15 # veg
+    >>> np.nanmean(flood[:1000]) > 0.15 # veg
     True
-    >>> flood[1000:3000].mean() > 0.15 # open water
+    >>> np.nanmean(flood[1000:3000]) > 0.15 # open water
     True
-    >>> flood[3000:].mean() > 0.15 # dry land
+    >>> np.nanmean(flood[3000:]) > 0.15 # dry land
     False
     """
     
