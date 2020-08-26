@@ -11,6 +11,8 @@ Verify tests by executing:  python -m doctest algorithm.py
 
 import numpy as np
 import scipy.optimize, scipy.stats
+import scipy.ndimage.filters, scipy.ndimage.measurements
+import xarray
 
 def fuzzy_smf(x, a, b):
     """
@@ -59,9 +61,49 @@ def find_mode(population):
     
     >>> round(find_mode(np.asarray([-10.05, 20.31, 20.29, 17, 20.27, 17, 37])), 1)
     20.3
+    
+    >>> round(find_mode(np.asarray([-33.2])))
+    -33
+    
+    >>> find_mode(np.asarray([]))
+    0
     """
+    if not len(population):
+        return 0
     counts, values = hist_fixedwidth(population)
-    return values[counts.argmax()]
+    pos = counts.argmax()
+    return values[pos] if pos else values.min()
+
+def fitNormal(population):
+    """
+    Obtain mode and standard deviation of a population.
+    
+    >>> pop = np.random.normal(loc=-20, scale=3, size=15000)
+    >>> mode, sigma = fitNormal(pop)
+    >>> -22 < mode < -18
+    True
+    >>> round(sigma)
+    3
+    """
+    # Quick alternative robust fit:
+    # median = np.nanmedian(population) 
+    # MADstd = np.nanmedian(np.abs(population - median)) * 1.4826 
+    
+    # TODO: make robust against too few bins,
+    # i.e. population max and min insufficiently separated.
+    
+    std = np.nanstd(population) # naive initial estimate
+
+    Y, X = hist_fixedwidth(population)
+    
+    mode = X[Y.argmax()]
+    
+    # fit gaussian to distribution
+    def gaussian(x, mean, sigma):
+        return np.exp(-0.5 * ((x - mean)/sigma)**2) / (sigma * (2*np.pi)**0.5)
+    (mean, std), cov = scipy.optimize.curve_fit(gaussian, X, Y, p0=[mode, std])
+    
+    return mode, std
 
 def leftFitNormal(population):
     """
@@ -300,14 +342,17 @@ def openwater(backscatter, persistent, historic):
     wettable = backscatter[historic]
     
     # "Methodology 1" - fit left side of normal distribution to persistant waterbodies
-    L1, std = leftFitNormal(dark)
+    L1, std = fitNormal(dark)
     R1 = L1 + std
     
     # "Methodology 2" - find left-separability of distribution by persistance
     try:
         R2 = chiSeparate(notdark, dark)[0]
+        darkmode = find_mode(dark[dark < R2])
+        # TODO: confirm intended behaviour if subset range is empty.
     except Inseparable:
         R2 = R1
+        darkmode = 0
     
     # "Methodology 3" - find left-separability of distribution by precedent
     try:
@@ -315,7 +360,7 @@ def openwater(backscatter, persistent, historic):
     except Inseparable:
         R3 = R1
     
-    mode, std = leftFitNormal(notdark)
+    mode, std = fitNormal(notdark)
     upperbound = mode - 0.5 * std
     
     # Conclusion - decide which thresholds to return
@@ -328,9 +373,7 @@ def openwater(backscatter, persistent, historic):
     if R > upperbound: # abort! (no apparent water)
         return [backscatter.min()] * 2
 
-    assert (dark < R2).sum() > 0, (R1, R2, R3, backscatter.min(), dark.min()) # TODO: handle gracefully
-    
-    L = L1 if R == R1 else np.mean([R, find_mode(dark[dark < R2])])
+    L = L1 if R == R1 else np.mean([R, darkmode])
     
     # If R1 or R2 is less than R3, then guaranteed that L =< R.
     # TODO: Does this make (R3 < R2) test redundant?
@@ -398,7 +441,24 @@ def vegetation(backscatter, lowlying, precedent, v4=False):
     return S1, S2, enhance, attenuate, correlation
 
 
-def classify(backscatter, wofs, hand, landcover):
+def despeckle(img, size=7):
+    """Lee speckle filter"""
+    # https://stackoverflow.com/a/39786527/5104777
+    
+    img = img.copy()
+    img[~np.isfinite(img)] = 0 # TODO: this shouldn't be needed (mishandled sample input nodata values?)
+
+    img_mean = scipy.ndimage.filters.uniform_filter(img, (size, size))
+    img_sqr_mean = scipy.ndimage.filters.uniform_filter(img**2, (size, size))
+    img_variance = img_sqr_mean - img_mean**2
+
+    overall_variance = scipy.ndimage.measurements.variance(img)
+
+    img_weights = img_variance / (img_variance + overall_variance)
+    return img_mean + img_weights * (img - img_mean)
+
+
+def classify(backscatter, wofs, hand, landcover, speckle=False):
     """
     Generate probabilistic flood raster
     
@@ -418,7 +478,27 @@ def classify(backscatter, wofs, hand, landcover):
     True
     >>> np.nanmean(flood[3000:]) > 0.15 # dry land
     False
+    
+    >>> ex = xarray.open_dataset('example_data.nc').isel(time=0)
+    >>> result = classify(ex.vv.data, ex.wofs.data, ex.hand.data, ex.landcover.data, True)
+    >>> 0.05 < np.nanmean(result) < 0.95
+    True
+    >>> np.isfinite(result).mean() > 0.8
+    True
+    >>> len(result.shape)
+    2
     """
+    
+    valid = np.isfinite(backscatter)
+    
+    if speckle:
+        backscatter = despeckle(backscatter)
+    
+    # unravel raster and exclude missing data
+    backscatter = backscatter[valid]
+    wofs = wofs[valid]
+    hand = hand[valid]
+    landcover = landcover[valid]
     
     # define input thresholds
     persistent = wofs > 0.8
@@ -427,7 +507,7 @@ def classify(backscatter, wofs, hand, landcover):
     
     ow1, ow2 = openwater(backscatter, persistent, historic) # find thresholds
     ow = fuzzy_zmf(backscatter, ow1, ow2) # produce open water raster
-    
+
     notopen = (backscatter > ow2) & ~persistent
     
     veg = np.zeros_like(backscatter, dtype=np.float32)
@@ -443,6 +523,7 @@ def classify(backscatter, wofs, hand, landcover):
             veg[subset] = fuzzy_smf(backscatter[subset], S1, S2)
             veg[subset & historic] **= enhance
             veg[subset & ~historic] **= attenuate
+            # TODO: separate treatment for range outside of (S1,S2) in case of nonfinite exponent?
             
             # mask strong claims if evidence is uncompelling
             if cov > 0.998:
@@ -451,5 +532,8 @@ def classify(backscatter, wofs, hand, landcover):
         except Inseparable:
             pass
 
-    return ow + veg
+    # reconstitute raster
+    result = np.full(valid.shape, dtype=np.float32, fill_value=np.nan)
+    result[valid] = ow + veg
+    return result
     
