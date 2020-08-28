@@ -491,8 +491,10 @@ def classify(backscatter, wofs, hand, landcover, speckle=False):
     
     valid = np.isfinite(backscatter)
     
-    if speckle:
-        backscatter = despeckle(backscatter)
+    # Lee filter before converting to decibels
+    if speckle: 
+        backscatter = np.log10(despeckle(backscatter)) * 10
+        valid &= np.isfinite(backscatter)
     
     # unravel raster and exclude missing data
     backscatter = backscatter[valid]
