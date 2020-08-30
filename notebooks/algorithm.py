@@ -9,6 +9,9 @@ https://doi.org/10.1016/j.rse.2019.111582
 Verify tests by executing:  python -m doctest algorithm.py
 """
 
+# TODO: restructure into stateful class objects,
+# to facilitate visual review of classification sequence e.g. histograms.
+
 import numpy as np
 import scipy.optimize, scipy.stats
 import scipy.ndimage.filters, scipy.ndimage.measurements
@@ -130,6 +133,7 @@ def leftFitNormal(population):
     >>> round(sigma) == 3
     False
     """
+    # TODO: Can this function be omitted?
 
     # Quick alternative robust fit:
     # median = np.nanmedian(population) 
@@ -458,7 +462,7 @@ def despeckle(img, size=7):
     return img_mean + img_weights * (img - img_mean)
 
 
-def classify(backscatter, wofs, hand, landcover, speckle=False):
+def classify(backscatter, wofs, hand, landcover, prefilter=False):
     """
     Generate probabilistic flood raster
     
@@ -488,11 +492,11 @@ def classify(backscatter, wofs, hand, landcover, speckle=False):
     >>> len(result.shape)
     2
     """
-    
+    # TODO: also verify validity of ancilliary layers.
     valid = np.isfinite(backscatter)
     
     # Lee filter before converting to decibels
-    if speckle: 
+    if prefilter: 
         backscatter = np.log10(despeckle(backscatter)) * 10
         valid &= np.isfinite(backscatter)
     
